@@ -284,6 +284,30 @@ eqsel_internal(PG_FUNCTION_ARGS, bool negate)
 }
 
 /*
+ * Call binary boolean function, converting NULL result to FALSE
+ */
+static bool
+BoolFunctionCall2Coll(FmgrInfo *flinfo, Oid collation, Datum arg1, Datum arg2)
+{
+	LOCAL_FCINFO(fcinfo, 2);
+	Datum		result;
+
+	InitFunctionCallInfoData(*fcinfo, flinfo, 2, collation, NULL, NULL);
+
+	fcinfo->args[0].value = arg1;
+	fcinfo->args[0].isnull = false;
+	fcinfo->args[1].value = arg2;
+	fcinfo->args[1].isnull = false;
+
+	result = FunctionCallInvoke(fcinfo);
+
+	if (fcinfo->isnull)
+		return false;
+
+	return DatumGetBool(result);
+}
+
+/*
  * var_eq_const --- eqsel for var = const case
  *
  * This is exported so that some other estimation functions can use it.

@@ -1267,6 +1267,7 @@ JsonParseErrorType
 JsonParseExpr
 JsonPath
 JsonPathBool
+JsonPathEncodingContext
 JsonPathDatatypeStatus
 JsonPathExecContext
 JsonPathExecResult
