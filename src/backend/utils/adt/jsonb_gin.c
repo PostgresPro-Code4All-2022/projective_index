@@ -150,6 +150,23 @@ typedef struct JsonPathGinPath
 	};
 } JsonPathGinPath;
 
+typedef enum JsonPathTreeType
+{
+	JSP_ROOT,
+	JSP_KEY,
+	JSP_ANY_KEY,
+	JSP_ANY_ARRAY,
+	JSP_NOT_ARRAY,
+	JSP_UNSUPPORTED
+} JsonPathTreeType;
+
+typedef struct JsonPathTreeItem
+{
+	JsonPathTreeType type;
+    JsonPathItem *value;
+    List *children;
+} JsonPathTreeItem;
+
 typedef struct JsonPathGinContext JsonPathGinContext;
 
 /* Callback, which stores information about path item into JsonPathGinPath */
@@ -1654,6 +1671,7 @@ extract_jsp_path_expr_nodes(JsonPathGinContext *cxt, JsonPathGinPath path,
 	return cxt->extract_nodes(cxt, path, scalar, nodes);
 }
 
+
 /*
  * Extract an expression node from one of following jsonpath path expressions:
  *   EXISTS(jsp)    (when 'scalar' is NULL)
@@ -1871,6 +1889,7 @@ extract_jsp_query(JsonPath *jp, GinJsonOptions *options, StrategyNumber strat,
 	JsonPathGinPath path = {0};
 	GinEntries	entries = {0};
 
+	// index_paths сейчас в options перемещаются оттуда в cxt->indexed_paths
 	init_gin_jsonb_context(&cxt.common, options, pathOps);
 
 	cxt.lax_query = (jp->header & JSONPATH_LAX) != 0;
@@ -1970,6 +1989,90 @@ print_jsonpath_query(StringInfo buf, JsonPathGinNode *node, Datum *entries,
 			elog(ERROR, "invalid jsonpath gin node type: %d", node->type);
 	}
 }
+
+static void add_tree_node(JsonPathTreeItem *root, JsonPathItem *item, bool lax) 
+{
+	JsonPathItem next;
+	JsonPathTreeItem *new;
+	JsonPathTreeType type = JSP_UNSUPPORTED;
+
+	if (item == NULL)
+		return;
+	
+	switch (item->type)
+	{
+	case jpiKey:
+		type = JSP_KEY;
+		break;
+	case jpiAnyKey:
+		type = JSP_ANY_KEY;
+		break;
+	case jpiAnyArray:
+		type = JSP_ANY_ARRAY;
+	default:
+		elog(ERROR, "invalid jsonpath node type: %d", item->type);
+		break;
+	}
+
+	new = palloc(sizeof(*new));
+	new->type = type;
+	new->value = item;
+	new->children = NIL;
+	root->children = lappend(root->children, new);
+
+	if (!jspGetNext(item, &next))
+		return;
+
+	add_tree_node((JsonPathTreeItem *) llast(root->children), &next, lax);
+
+	if (lax && (type == JSP_ANY_ARRAY || type == JSP_KEY)) {
+		JsonPathTreeItem *new_branch;
+		new_branch = palloc(sizeof(*new_branch));
+		new_branch->type = JSP_ANY_ARRAY;
+		new_branch->value = NULL;
+		new_branch->children = NIL;
+
+		new = palloc(sizeof(*new));
+		new->type = type;
+		new->value = item;
+		new->children = NIL;
+
+		new_branch->children = lappend(new_branch->children, new);
+		root->children = lappend(root->children, new_branch);
+		add_tree_node((JsonPathTreeItem *) llast(new_branch->children), &next, lax);
+	}
+}
+
+static void generate_json_tree(JsonPath *jp, JsonPathTreeItem *root) 
+{
+	bool lax = (jp->header & JSONPATH_LAX) != 0;
+	JsonPathItem jsp;
+	JsonPathItem next;
+	
+	jspInit(&jsp, jp);
+
+	root->type = JSP_ROOT;
+	root->value = &jsp;
+	root->children = NIL;
+	if (!jspGetNext(&jsp, &next))
+		return;
+
+	add_tree_node(root, &next, lax);
+}
+
+Datum
+gin_debug_jsonpath_generation(PG_FUNCTION_ARGS)
+{
+	JsonPath   *query = PG_GETARG_JSONPATH_P(0);
+	JsonPathTreeItem root = {0};
+	root.children = NIL;
+
+	generate_json_tree(query, &root);
+
+	PG_RETURN_NULL();
+
+}
+
 
 Datum
 gin_debug_jsonpath_query(PG_FUNCTION_ARGS)
