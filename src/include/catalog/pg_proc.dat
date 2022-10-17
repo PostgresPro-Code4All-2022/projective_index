@@ -11863,8 +11863,8 @@
   proargtypes => 'jsonpath jsonpath bool bool',
   prosrc => 'gin_debug_jsonpath_query' },
 { oid => '6317', descr => 'print extracted GIN jsonpath query',
-  proname => 'gin_debug_jsonpath_generation', prorettype => 'void',
-  proargtypes => 'jsonpath',
+  proname => 'gin_debug_jsonpath_generation', prorettype => 'bool',
+  proargtypes => 'jsonpath jsonpath',
   prosrc => 'gin_debug_jsonpath_generation' },
 
 { oid => '6198', descr => 'unescape Unicode characters',

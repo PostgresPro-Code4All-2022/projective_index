@@ -2014,8 +2014,9 @@ static JsonPathTreeType get_jsp_node_type(JsonPathItemType jsp_type)
 
 static void add_tree_node(JsonPathTreeItem *root, JsonPathItem *item, bool lax) 
 {
-	JsonPathItem next;
-	bool next_exists;
+	JsonPathItem nextbuf;
+	JsonPathItem *next;
+	JsonPathItem *value;
 	JsonPathTreeItem *new;
 	JsonPathTreeType type = JSP_UNSUPPORTED;
 
@@ -2024,16 +2025,17 @@ static void add_tree_node(JsonPathTreeItem *root, JsonPathItem *item, bool lax)
 
 	type = get_jsp_node_type(item->type);
 
+	value = (JsonPathItem *)memcpy(palloc(sizeof(*item)), item, sizeof(*item));
 	new = palloc(sizeof(*new));
 	new->type = type;
-	new->value = item;
+	new->value = value;
 	new->children = NIL;
 	root->children = lappend(root->children, new);
 
-	next_exists = jspGetNext(item, &next);
+	next = jspGetNext(item, &nextbuf) ? &nextbuf : NULL;
 		
-	if (next_exists)
-		add_tree_node((JsonPathTreeItem *) llast(root->children), &next, lax);
+	if (next != NULL)
+		add_tree_node((JsonPathTreeItem *) llast(root->children), next, lax);
 
 	if (lax && (type == JSP_ANY_KEY || type == JSP_KEY)) 
 	{
@@ -2045,12 +2047,12 @@ static void add_tree_node(JsonPathTreeItem *root, JsonPathItem *item, bool lax)
 
 		new = palloc(sizeof(*new));
 		new->type = type;
-		new->value = item;
+		new->value = value;
 		new->children = NIL;
 
 		new_branch->children = lappend(new_branch->children, new);
 		root->children = lappend(root->children, new_branch);
-		add_tree_node((JsonPathTreeItem *) llast(new_branch->children), next_exists ? &next : NULL, lax);
+		add_tree_node((JsonPathTreeItem *) llast(new_branch->children), next, lax);
 	}
 
 	if (lax && type == JSP_ANY_ARRAY) 
@@ -2090,18 +2092,74 @@ static void print_tree(JsonPathTreeItem *root, int level) {
 	}
 }
 
+static bool match_strict_jsp_query(JsonPathTreeItem *root, JsonPathItem *query) 
+{
+	bool result = false;
+	ListCell   *lc;
+	JsonPathItem nextbuf;
+	JsonPathItem *next;
+
+	if (query == NULL) 
+	{
+		if (root->children != NIL)
+			return false;
+		return true;
+	}
+	if (root->children == NIL)
+		return true;
+
+	next = jspGetNext(query, &nextbuf) ? &nextbuf : NULL;
+
+	foreach(lc, root->children)
+	{
+		JsonPathTreeItem *child = (JsonPathTreeItem *)lc->ptr_value;
+		if ((child->type == JSP_KEY || child->type == JSP_ANY_KEY) && query->type == jpiKey)
+		{
+			if (child->type == JSP_ANY_KEY)
+			{
+				if (match_strict_jsp_query(child, next))
+					result = true;
+			}
+			else
+			{
+				int			len1;
+				int			len2;
+				char	   *key1 = jspGetString(child->value, &len1);
+				char	   *key2 = jspGetString(query, &len2);
+
+				if (len1 == len2 && !memcmp(key1, key2, len1))
+					if (match_strict_jsp_query(child, next))
+						result = true;
+			}
+		}
+		if (child->type == JSP_ANY_ARRAY)
+		{
+			if (query->type == jpiAnyArray || query->type == jpiIndexArray) 
+				if (match_strict_jsp_query(child, next))
+					result = true;
+		}
+	}
+
+	return result;
+}
+
 Datum
 gin_debug_jsonpath_generation(PG_FUNCTION_ARGS)
 {
-	JsonPath   *query = PG_GETARG_JSONPATH_P(0);
+	JsonPath   *index = PG_GETARG_JSONPATH_P(0);
+	JsonPath   *query = PG_GETARG_JSONPATH_P(1);
+	JsonPathItem jsp;
+	JsonPathItem next;
 	JsonPathTreeItem root = {0};
 	root.children = NIL;
+	
+	generate_json_tree(index, &root);
+	//print_tree(&root, 0);
 
-	generate_json_tree(query, &root);
-	print_tree(&root, 0);
+	jspInit(&jsp, query);
+	jspGetNext(&jsp, &next);
 
-	PG_RETURN_NULL();
-
+	PG_RETURN_BOOL(match_strict_jsp_query(&root, &next));
 }
 
 
