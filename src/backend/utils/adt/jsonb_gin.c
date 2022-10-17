@@ -1990,29 +1990,39 @@ print_jsonpath_query(StringInfo buf, JsonPathGinNode *node, Datum *entries,
 	}
 }
 
+static JsonPathTreeType get_jsp_node_type(JsonPathItemType jsp_type)
+{
+	JsonPathTreeType type = JSP_UNSUPPORTED;
+	
+	switch (jsp_type)
+	{
+		case jpiKey:
+			type = JSP_KEY;
+			break;
+		case jpiAnyKey:
+			type = JSP_ANY_KEY;
+			break;
+		case jpiAnyArray:
+			type = JSP_ANY_ARRAY;
+			break;
+		default:
+			elog(ERROR, "invalid jsonpath node type: %d", jsp_type);
+			break;
+	}
+	return type;
+}
+
 static void add_tree_node(JsonPathTreeItem *root, JsonPathItem *item, bool lax) 
 {
 	JsonPathItem next;
+	bool next_exists;
 	JsonPathTreeItem *new;
 	JsonPathTreeType type = JSP_UNSUPPORTED;
 
 	if (item == NULL)
 		return;
-	
-	switch (item->type)
-	{
-	case jpiKey:
-		type = JSP_KEY;
-		break;
-	case jpiAnyKey:
-		type = JSP_ANY_KEY;
-		break;
-	case jpiAnyArray:
-		type = JSP_ANY_ARRAY;
-	default:
-		elog(ERROR, "invalid jsonpath node type: %d", item->type);
-		break;
-	}
+
+	type = get_jsp_node_type(item->type);
 
 	new = palloc(sizeof(*new));
 	new->type = type;
@@ -2020,12 +2030,13 @@ static void add_tree_node(JsonPathTreeItem *root, JsonPathItem *item, bool lax)
 	new->children = NIL;
 	root->children = lappend(root->children, new);
 
-	if (!jspGetNext(item, &next))
-		return;
+	next_exists = jspGetNext(item, &next);
+		
+	if (next_exists)
+		add_tree_node((JsonPathTreeItem *) llast(root->children), &next, lax);
 
-	add_tree_node((JsonPathTreeItem *) llast(root->children), &next, lax);
-
-	if (lax && (type == JSP_ANY_ARRAY || type == JSP_KEY)) {
+	if (lax && (type == JSP_ANY_KEY || type == JSP_KEY)) 
+	{
 		JsonPathTreeItem *new_branch;
 		new_branch = palloc(sizeof(*new_branch));
 		new_branch->type = JSP_ANY_ARRAY;
@@ -2039,7 +2050,16 @@ static void add_tree_node(JsonPathTreeItem *root, JsonPathItem *item, bool lax)
 
 		new_branch->children = lappend(new_branch->children, new);
 		root->children = lappend(root->children, new_branch);
-		add_tree_node((JsonPathTreeItem *) llast(new_branch->children), &next, lax);
+		add_tree_node((JsonPathTreeItem *) llast(new_branch->children), next_exists ? &next : NULL, lax);
+	}
+
+	if (lax && type == JSP_ANY_ARRAY) 
+	{
+		new = palloc(sizeof(*new));
+		new->type = JSP_NOT_ARRAY;
+		new->value = NULL;
+		new->children = NIL;
+		root->children = lappend(root->children, new);
 	}
 }
 
@@ -2060,6 +2080,16 @@ static void generate_json_tree(JsonPath *jp, JsonPathTreeItem *root)
 	add_tree_node(root, &next, lax);
 }
 
+static void print_tree(JsonPathTreeItem *root, int level) {
+	ListCell   *lc;
+
+	elog(NOTICE, "lvl %d node type %d", level, root->type);
+	foreach(lc, root->children)
+	{
+		print_tree((JsonPathTreeItem *)lc->ptr_value, level + 1);
+	}
+}
+
 Datum
 gin_debug_jsonpath_generation(PG_FUNCTION_ARGS)
 {
@@ -2068,6 +2098,7 @@ gin_debug_jsonpath_generation(PG_FUNCTION_ARGS)
 	root.children = NIL;
 
 	generate_json_tree(query, &root);
+	print_tree(&root, 0);
 
 	PG_RETURN_NULL();
 
